@@ -1,4 +1,5 @@
 import os
+import base64
 from flask import Flask, request, send_file, jsonify
 from PIL import Image
 import piexif
@@ -29,11 +30,12 @@ def add_exif():
         # Log file keys
         log(f"📂 Files received: {list(request.files.keys())}")
 
-        if 'image' not in request.files:
-            log("❌ No 'image' file found in request.files")
-            return jsonify({"error": "No image file provided"}), 400
+        # Accept file from 'image' or 'data' (n8n may send as "data" when Input Data Field Name is "data")
+        image_file = request.files.get('image') or request.files.get('data')
+        if not image_file or not image_file.filename or image_file.filename.strip() == '':
+            log("❌ No image file provided (need 'image' or 'data' with a non-empty filename)")
+            return jsonify({"error": "No image file provided. Send the file as form field 'image' or 'data'."}), 400
 
-        image_file = request.files['image']
         log(f"📄 Image filename: {image_file.filename}")
         log(f"📦 Image content type: {image_file.content_type}")
 
@@ -56,6 +58,22 @@ def add_exif():
         output.seek(0)
 
         log("✅ EXIF embedded and image returned successfully")
+
+        # Return JSON when client expects it (e.g. n8n default), so they get parseable response
+        wants_json = (
+            request.args.get("format") == "json"
+            or "application/json" in request.headers.get("Accept", "")
+        )
+        if wants_json:
+            output.seek(0)
+            b64 = base64.b64encode(output.read()).decode("ascii")
+            return jsonify({
+                "success": True,
+                "filename": "exif-image.jpg",
+                "mimetype": "image/jpeg",
+                "image_base64": b64,
+            })
+
         return send_file(output, mimetype='image/jpeg', download_name='exif-image.jpg')
 
     except Exception as e:
