@@ -1,5 +1,4 @@
 import os
-import base64
 from flask import Flask, request, send_file, jsonify
 from PIL import Image
 import piexif
@@ -10,81 +9,63 @@ import datetime
 app = Flask(__name__)
 LOG_FILE = "logs.txt"
 
-# Logging helper (UTF-8 so emoji and non-ASCII form data work on Windows/Railway)
+# Logging helper (file + stdout so Railway deploy logs show everything)
 def log(message):
     timestamp = datetime.datetime.utcnow().isoformat()
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{timestamp} - {message}\n")
+    line = f"{timestamp} - {message}"
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    # Railway captures stdout; use ASCII-safe message for console
+    safe = message.encode("ascii", "replace").decode("ascii")
+    print(f"[exif] {timestamp} - {safe}", flush=True)
 
 @app.route('/exif', methods=['POST'])
 def add_exif():
     try:
-        log("✅ Received POST /exif")
-        log(f"   Content-Type: {request.headers.get('Content-Type', '')}")
-        log(f"   Accept: {request.headers.get('Accept', '')}")
-        log(f"   Query: {request.query_string.decode() if request.query_string else '(none)'}")
+        log("Received POST /exif")
+        log(f"Content-Type: {request.headers.get('Content-Type', '')}")
+        log(f"Accept: {request.headers.get('Accept', '')}")
 
-        # Log form data
         form_data = request.form.to_dict()
-        log("📝 Form data:")
+        log(f"Form keys: {list(form_data.keys())}")
         for key, value in form_data.items():
-            log(f"  {key}: {value}")
+            s = str(value) if value is not None else ""
+            log(f"  {key}: {s[:80]}..." if len(s) > 80 else f"  {key}: {s}")
 
-        # Log file keys
-        log(f"📂 Files received: {list(request.files.keys())}")
+        log(f"File keys: {list(request.files.keys())}")
 
-        # Accept file from 'image' or 'data' (n8n may send as "data" when Input Data Field Name is "data")
-        image_file = request.files.get('image') or request.files.get('data')
-        if not image_file or not image_file.filename or image_file.filename.strip() == '':
-            log("❌ No image file provided (need 'image' or 'data' with a non-empty filename)")
-            return jsonify({"error": "No image file provided. Send the file as form field 'image' or 'data'."}), 400
+        image_file = request.files.get("image") or request.files.get("data")
+        if not image_file or not (getattr(image_file, "filename", None) or "").strip():
+            log("No image file (need form field 'image' or 'data' with filename)")
+            return jsonify({"error": "No image file provided. Use form field 'image' or 'data'."}), 400
 
-        log(f"📄 Image filename: {image_file.filename}")
-        log(f"📦 Image content type: {image_file.content_type}")
+        log(f"Image filename: {image_file.filename}")
+        log(f"Image content-type: {image_file.content_type}")
 
-        # Open and convert to RGB if needed (PNG etc.)
         img = Image.open(image_file).convert("RGB")
-        log(f"🖼️ Image format: {img.format}, size: {img.size}, mode: {img.mode}")
+        log(f"Opened image: format={img.format}, size={img.size}, mode={img.mode}")
 
-        # Build EXIF metadata
         exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
         exif_dict["0th"][piexif.ImageIFD.Artist] = form_data.get("Artist", "").encode()
         exif_dict["0th"][piexif.ImageIFD.ImageDescription] = form_data.get("ImageDescription", "").encode()
         exif_dict["0th"][piexif.ImageIFD.Software] = form_data.get("Software", "").encode()
         exif_dict["0th"][piexif.ImageIFD.Copyright] = form_data.get("Copyright", "").encode()
-        exif_dict["0th"][piexif.ImageIFD.XPTitle] = form_data.get("Title", "").encode('utf-16le')
+        exif_dict["0th"][piexif.ImageIFD.XPTitle] = form_data.get("Title", "").encode("utf-16le")
+        log("EXIF built: Artist, Title, ImageDescription, Software, Copyright")
 
-        # Inject EXIF
         exif_bytes = piexif.dump(exif_dict)
         output = io.BytesIO()
         img.save(output, format="JPEG", exif=exif_bytes)
         output.seek(0)
-
-        log("✅ EXIF embedded and image returned successfully")
-
-        # Return JSON when client expects it (e.g. n8n default), so they get parseable response
-        wants_json = (
-            request.args.get("format") == "json"
-            or "application/json" in request.headers.get("Accept", "")
-        )
-        log(f"   Response mode: {'JSON' if wants_json else 'binary'}")
-
-        if wants_json:
-            output.seek(0)
-            b64 = base64.b64encode(output.read()).decode("ascii")
-            log(f"   Returning JSON with base64 length {len(b64)}")
-            return jsonify({
-                "success": True,
-                "filename": "exif-image.jpg",
-                "mimetype": "image/jpeg",
-                "image_base64": b64,
-            })
-
-        log("   Returning binary JPEG")
-        return send_file(output, mimetype='image/jpeg', download_name='exif-image.jpg')
+        size = output.getbuffer().nbytes
+        log(f"EXIF injected, JPEG size={size} bytes, returning binary file")
+        return send_file(output, mimetype="image/jpeg", download_name="exif-image.jpg")
 
     except Exception as e:
-        log("❌ EXCEPTION:")
+        log(f"EXCEPTION: {e}")
         log(traceback.format_exc())
         return jsonify({"error": "Internal server error", "message": str(e)}), 500
 
@@ -98,5 +79,5 @@ def get_logs():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    log(f"🚀 Starting server on port {port}")
+    log(f"Starting server on port {port}")
     app.run(host="0.0.0.0", port=port)
