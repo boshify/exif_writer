@@ -10,16 +10,19 @@ import datetime
 app = Flask(__name__)
 LOG_FILE = "logs.txt"
 
-# Logging helper
+# Logging helper (UTF-8 so emoji and non-ASCII form data work on Windows/Railway)
 def log(message):
     timestamp = datetime.datetime.utcnow().isoformat()
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{timestamp} - {message}\n")
 
 @app.route('/exif', methods=['POST'])
 def add_exif():
     try:
         log("✅ Received POST /exif")
+        log(f"   Content-Type: {request.headers.get('Content-Type', '')}")
+        log(f"   Accept: {request.headers.get('Accept', '')}")
+        log(f"   Query: {request.query_string.decode() if request.query_string else '(none)'}")
 
         # Log form data
         form_data = request.form.to_dict()
@@ -64,9 +67,12 @@ def add_exif():
             request.args.get("format") == "json"
             or "application/json" in request.headers.get("Accept", "")
         )
+        log(f"   Response mode: {'JSON' if wants_json else 'binary'}")
+
         if wants_json:
             output.seek(0)
             b64 = base64.b64encode(output.read()).decode("ascii")
+            log(f"   Returning JSON with base64 length {len(b64)}")
             return jsonify({
                 "success": True,
                 "filename": "exif-image.jpg",
@@ -74,6 +80,7 @@ def add_exif():
                 "image_base64": b64,
             })
 
+        log("   Returning binary JPEG")
         return send_file(output, mimetype='image/jpeg', download_name='exif-image.jpg')
 
     except Exception as e:
@@ -84,7 +91,7 @@ def add_exif():
 @app.route('/logs', methods=['GET'])
 def get_logs():
     try:
-        with open(LOG_FILE, "r") as f:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
             return f"<pre>{f.read()}</pre>"
     except Exception as e:
         return f"Error reading logs: {str(e)}", 500
